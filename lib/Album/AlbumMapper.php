@@ -24,9 +24,11 @@ declare(strict_types=1);
 namespace OCA\Photos\Album;
 
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
+use OCA\Photos\Event\PhotosAlbumFileAddedEvent;
 use OCA\Photos\Exception\AlreadyInAlbumException;
 use OCP\AppFramework\Utility\ITimeFactory;
 use OCP\DB\QueryBuilder\IQueryBuilder;
+use OCP\EventDispatcher\IEventDispatcher;
 use OCP\Files\IMimeTypeLoader;
 use OCP\Security\ISecureRandom;
 use OCP\IDBConnection;
@@ -40,6 +42,7 @@ class AlbumMapper {
 	private ITimeFactory $timeFactory;
 	private IUserManager $userManager;
 	private IGroupManager $groupManager;
+	private IEventDispatcher $eventDispatcher;
 	protected IL10N $l;
 	protected ISecureRandom $random;
 
@@ -54,6 +57,7 @@ class AlbumMapper {
 		ITimeFactory $timeFactory,
 		IUserManager $userManager,
 		IGroupManager $groupManager,
+		IEventDispatcher $eventDispatcher,
 		IL10N $l,
 		ISecureRandom $random
 	) {
@@ -62,6 +66,7 @@ class AlbumMapper {
 		$this->timeFactory = $timeFactory;
 		$this->userManager = $userManager;
 		$this->groupManager = $groupManager;
+		$this->eventDispatcher = $eventDispatcher;
 		$this->l = $l;
 		$this->random = $random;
 	}
@@ -255,6 +260,9 @@ class AlbumMapper {
 			->set('last_added_photo', $query->createNamedParameter($fileId, IQueryBuilder::PARAM_INT))
 			->where($query->expr()->eq('album_id', $query->createNamedParameter($albumId, IQueryBuilder::PARAM_INT)));
 		$query->executeStatement();
+		// Dispatch the event after the photo is successfully added
+		$event = new PhotosAlbumFileAddedEvent($albumId, $fileId, $owner);
+		$this->eventDispatcher->dispatchTyped($event);
 	}
 
 	public function removeFile(int $albumId, int $fileId): void {
