@@ -172,10 +172,19 @@ class AlbumMapper {
 	public function delete(int $id): void {
 		$this->connection->beginTransaction();
 
-		// Get all files from the album id and store in AlbumFile array
-		$albumFiles = $this->getForAlbumIdAndUserWithFiles($id, $this->get($id)->getUserId());
-		// Get collaborators
+		// Gather the data before deleting the album
+		// Get the album Info
+		$albumInfo = $this->get($id);
+		// Get the collaborators
 		$collaborators = $this->getCollaborators($id);
+		// Get the files in the album
+		$albumFiles = $this->getForAlbumIdAndUserWithFiles($id, $albumInfo->getUserId());
+		// Append the files added by collaborators
+		foreach ($collaborators as $collaborator) {
+			if ($collaborator['type'] === self::TYPE_USER) {
+				$albumFiles = array_merge($albumFiles, $this->getForAlbumIdAndUserWithFiles($id, $collaborator['id']));
+			}
+		}
 
 		$query = $this->connection->getQueryBuilder();
 		$query->delete("photos_albums")
@@ -195,7 +204,7 @@ class AlbumMapper {
 		$this->connection->commit();
 
 		// Dispatch the event after the album is successfully deleted
-		$event = new PhotosAlbumDeletedEvent($id, $albumFiles, $collaborators);
+		$event = new PhotosAlbumDeletedEvent($albumInfo, $collaborators, $albumFiles);
 		$this->eventDispatcher->dispatchTyped($event);
 	}
 
@@ -272,13 +281,19 @@ class AlbumMapper {
 			->set('last_added_photo', $query->createNamedParameter($fileId, IQueryBuilder::PARAM_INT))
 			->where($query->expr()->eq('album_id', $query->createNamedParameter($albumId, IQueryBuilder::PARAM_INT)));
 		$query->executeStatement();
+
 		// Dispatch the event after the photo is successfully added
 		$event = new PhotosAlbumFileAddedEvent($albumId, $fileId, $owner);
 		$this->eventDispatcher->dispatchTyped($event);
 	}
 
 	public function removeFile(int $albumId, int $fileId): void {
-		// Get the albumfile which is going to be removed
+		// Gather the data before deleting
+		// Get the album Info
+		$albumInfo = $this->get($albumId);
+		// Get the collaborators
+		$collaborators = $this->getCollaborators($albumId);
+		// Get the albumfile
 		$albumFile = $this->getForAlbumIdAndFileId($albumId, $fileId);
 
 		$query = $this->connection->getQueryBuilder();
@@ -292,8 +307,9 @@ class AlbumMapper {
 			->set('last_added_photo', $query->createNamedParameter($this->getLastAdded($albumId), IQueryBuilder::PARAM_INT))
 			->where($query->expr()->eq('album_id', $query->createNamedParameter($albumId, IQueryBuilder::PARAM_INT)));
 		$query->executeStatement();
+
 		// Dispatch the event after the photo is successfully removed
-		$event = new PhotosAlbumFileDeletedEvent($albumId, $albumFile);
+		$event = new PhotosAlbumFileDeletedEvent($albumInfo, $collaborators, $albumFile);
 		$this->eventDispatcher->dispatchTyped($event);
 	}
 
@@ -301,7 +317,11 @@ class AlbumMapper {
 	 * Remove all files added by a user from an album.
 	 */
 	public function removeFilesForUser(int $albumId, string $userId) {
-
+		// Gather the data before deleting
+		// Get the album Info
+		$albumInfo = $this->get($albumId);
+		// Get the collaborators
+		$collaborators = $this->getCollaborators($albumId);
 		// Create an array and store all albumfiles which are going to be removed
 		$albumFiles = $this->getForAlbumIdAndUserWithFiles($albumId, $userId);
 
@@ -321,7 +341,7 @@ class AlbumMapper {
 
 		// Dispatch in a loop all the file deleted events
 		foreach ($albumFiles as $albumFile) {
-			$event = new PhotosAlbumFileDeletedEvent($albumId, $albumFile);
+			$event = new PhotosAlbumFileDeletedEvent($albumInfo, $collaborators, $albumFile);
 			$this->eventDispatcher->dispatchTyped($event);
 		}
 	}
@@ -367,7 +387,12 @@ class AlbumMapper {
 		// Check if the albumFilesInAlbum is not empty to prevent dispatching an event with an empty albumFile.
 		foreach ($albumFilesInAlbum as $albumId => $albumFile) {
 			if (!empty($albumFile)) {
-				$event = new PhotosAlbumFileDeletedEvent($albumId, $albumFile);
+				// Gather the data before deleting
+				// Get the album Info
+				$albumInfo = $this->get($albumId);
+				// Get the collaborators
+				$collaborators = $this->getCollaborators($albumId);
+				$event = new PhotosAlbumFileDeletedEvent($albumInfo, $collaborators, $albumFile);
 				$this->eventDispatcher->dispatchTyped($event);
 			}
 		}
@@ -615,6 +640,14 @@ class AlbumMapper {
 	 * @return void
 	 */
 	public function deleteUserFromAlbumCollaboratorsList(string $userId, int $albumId): void {
+		// Gather the data before deleting
+		// Get the album Info
+		$albumInfo = $this->get($albumId);
+		// Get the collaborators
+		$collaborators = $this->getCollaborators($albumId);
+		// Create an array and store all albumfiles which are going to be removed
+		$albumFiles = $this->getForAlbumIdAndUserWithFiles($albumId, $userId);
+
 		$query = $this->connection->getQueryBuilder();
 		$query->delete('photos_albums_collabs')
 			->where($query->expr()->eq('album_id', $query->createNamedParameter($albumId, IQueryBuilder::PARAM_INT)))
@@ -624,6 +657,22 @@ class AlbumMapper {
 
 		// Remove all photos by this user from the album:
 		$this->removeFilesForUser($albumId, $userId);
+
+		// Dispatch the event after the collaborators are successfully updated
+		$collaboratorsToRemove = [
+			[
+				'id' => $userId,
+				'label' => $this->userManager->get($userId)?->getDisplayName(),
+				'type' => self::TYPE_USER,
+			],
+		];
+		$event = new PhotosAlbumCollaboratorEvent($albumId, $collaboratorsToRemove, []);
+		$this->eventDispatcher->dispatchTyped($event);
+		// Dispatch in a loop all the file deleted events
+		foreach ($albumFiles as $albumFile) {
+			$event = new PhotosAlbumFileDeletedEvent($albumInfo, $collaborators, $albumFile);
+			$this->eventDispatcher->dispatchTyped($event);
+		}
 	}
 
 	/**
